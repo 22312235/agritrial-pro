@@ -40,20 +40,21 @@ SET LOCAL lock_timeout = '30s';
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_type WHERE typname = 'user_role'
+        SELECT 1
+        FROM pg_type
+        WHERE typname = 'user_role'
     ) THEN
         CREATE TYPE user_role AS ENUM (
-            'super_admin',
-            'admin',
+            'general_director',
             'manager',
-            'researcher',
-            'field_agent',
-            'technician',
-            'viewer'
+            'trial_officer'
         );
     END IF;
 END;
 $$;
+
+COMMENT ON TYPE user_role IS
+'Defines the system user roles.';
 
 COMMENT ON TYPE user_role IS
 'Defines the application roles.';
