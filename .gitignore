@@ -1,0 +1,40 @@
+# Flutter
+
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# VS Code
+
+.vscode/
+
+# Android
+
+android/.gradle/
+
+# iOS
+
+ios/Pods/
+
+# Supabase
+
+.supabase/
+
+# Logs
+
+*.log
+
+# Environment
+
+.env
+.env.*
+
+# macOS
+
+.DS_Store
+
+# Windows
+
+Thumbs.db
