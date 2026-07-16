@@ -3,16 +3,31 @@
 * Client       : Agrimatco Morocco
 * Database     : PostgreSQL 17 (Supabase)
 * Migration    : 0011_profiles.sql
-* Version      : 1.0.0
+* Version      : 1.1.0
 *
 * Description
 * -----------------------------------------------------------------------------------------------
-* Creates the Profiles table.
+* Creates the application profiles table.
 *
-* This table extends Supabase Auth (auth.users) and stores all application
-* user information.
+* The profiles table extends Supabase Auth without duplicating authentication
+* information. Every profile is linked to exactly one auth.users account and
+* exactly one application role.
 *
-* Every authenticated user MUST have exactly one profile.
+* Important architectural rules:
+*
+*   • Profiles are created explicitly by an authorized administrator.
+*   • No profile is created automatically after signup.
+*   • No default role is assigned automatically.
+*   • Email remains managed by auth.users and is not duplicated here.
+*   • Avatar files are stored in Supabase Storage; only the object path is saved.
+*   • Row Level Security policies are intentionally deferred to later migrations.
+*
+* Dependencies:
+*
+*   • 0001_extensions.sql
+*   • 0003_domains.sql
+*   • 0005_trigger_functions.sql
+*   • 0010_roles.sql
 *
 ***************************************************************************************************/
 
@@ -28,543 +43,435 @@ SET LOCAL statement_timeout = '5min';
 
 SET LOCAL lock_timeout = '30s';
 
+SET LOCAL idle_in_transaction_session_timeout = '5min';
+
 --------------------------------------------------------------------------------
--- TABLE : profiles
+-- TABLE: profiles
 --------------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS profiles
+CREATE TABLE public.profiles
 (
     --------------------------------------------------------------------------
     -- Primary Key
     --------------------------------------------------------------------------
 
-    id                  UUID PRIMARY KEY
-                        REFERENCES auth.users(id)
-                        ON DELETE CASCADE,
+    id                  uuid
+                        PRIMARY KEY
+                        DEFAULT gen_random_uuid(),
 
     --------------------------------------------------------------------------
-    -- Role
+    -- Supabase Authentication Link
     --------------------------------------------------------------------------
 
-    role_id             UUID NOT NULL
-                        REFERENCES roles(id)
-                        ON DELETE RESTRICT,
+    user_id             uuid
+                        NOT NULL,
+
+    --------------------------------------------------------------------------
+    -- Application Role
+    --------------------------------------------------------------------------
+
+    role_id             uuid
+                        NOT NULL,
 
     --------------------------------------------------------------------------
     -- Employee Information
     --------------------------------------------------------------------------
 
-    employee_code       VARCHAR(20)
+    first_name          varchar(100)
                         NOT NULL,
 
-    first_name          VARCHAR(100)
+    last_name           varchar(100)
                         NOT NULL,
 
-    last_name           VARCHAR(100)
-                        NOT NULL,
-
-    email               email_address
+    employee_code       varchar(50)
                         NOT NULL,
 
     phone               phone_number,
 
-    avatar_url          TEXT,
+    avatar_path         text,
 
     --------------------------------------------------------------------------
-    -- Status
+    -- Account State
     --------------------------------------------------------------------------
 
-    is_active           BOOLEAN
+    is_active           boolean
                         NOT NULL
-                        DEFAULT TRUE,
+                        DEFAULT true,
 
-    last_login_at       TIMESTAMPTZ,
+    last_login_at       timestamptz,
 
     --------------------------------------------------------------------------
-    -- Audit Columns
+    -- Audit and Soft-Delete Columns
     --------------------------------------------------------------------------
 
-    created_at          TIMESTAMPTZ
-                        NOT NULL
-                        DEFAULT timezone('UTC', now()),
-
-    updated_at          TIMESTAMPTZ
+    created_at          timestamptz
                         NOT NULL
                         DEFAULT timezone('UTC', now()),
 
-    created_by          UUID
-                        REFERENCES profiles(id)
-                        ON DELETE SET NULL,
+    updated_at          timestamptz
+                        NOT NULL
+                        DEFAULT timezone('UTC', now()),
 
-    updated_by          UUID
-                        REFERENCES profiles(id)
-                        ON DELETE SET NULL,
+    created_by          uuid,
 
-    deleted_at          TIMESTAMPTZ,
+    updated_by          uuid,
+
+    deleted_at          timestamptz,
 
     --------------------------------------------------------------------------
-    -- Constraints
+    -- Foreign Keys
     --------------------------------------------------------------------------
 
-    CONSTRAINT uq_profiles_employee_code
-        UNIQUE(employee_code),
+    CONSTRAINT fk_profiles_user
+        FOREIGN KEY (user_id)
+        REFERENCES auth.users(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
 
-    CONSTRAINT uq_profiles_email
-        UNIQUE(email),
+    CONSTRAINT fk_profiles_role
+        FOREIGN KEY (role_id)
+        REFERENCES public.roles(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
 
-    CONSTRAINT chk_profiles_first_name
-        CHECK(length(trim(first_name)) >= 2),
+    CONSTRAINT fk_profiles_created_by
+        FOREIGN KEY (created_by)
+        REFERENCES auth.users(id)
+        ON UPDATE CASCADE
+        ON DELETE SET NULL,
 
-    CONSTRAINT chk_profiles_last_name
-        CHECK(length(trim(last_name)) >= 2)
+    CONSTRAINT fk_profiles_updated_by
+        FOREIGN KEY (updated_by)
+        REFERENCES auth.users(id)
+        ON UPDATE CASCADE
+        ON DELETE SET NULL,
 
+    --------------------------------------------------------------------------
+    -- Uniqueness Constraints
+    --------------------------------------------------------------------------
+
+    CONSTRAINT uq_profiles_user_id
+        UNIQUE (user_id),
+
+    --------------------------------------------------------------------------
+    -- Data Validation Constraints
+    --------------------------------------------------------------------------
+
+    CONSTRAINT chk_profiles_first_name_not_blank
+        CHECK (
+            length(btrim(first_name)) > 0
+        ),
+
+    CONSTRAINT chk_profiles_last_name_not_blank
+        CHECK (
+            length(btrim(last_name)) > 0
+        ),
+
+    CONSTRAINT chk_profiles_employee_code_not_blank
+        CHECK (
+            length(btrim(employee_code)) > 0
+        ),
+
+    CONSTRAINT chk_profiles_first_name_length
+        CHECK (
+            char_length(btrim(first_name)) <= 100
+        ),
+
+    CONSTRAINT chk_profiles_last_name_length
+        CHECK (
+            char_length(btrim(last_name)) <= 100
+        ),
+
+    CONSTRAINT chk_profiles_employee_code_length
+        CHECK (
+            char_length(btrim(employee_code)) <= 50
+        ),
+
+    CONSTRAINT chk_profiles_avatar_path_not_blank
+        CHECK (
+            avatar_path IS NULL
+            OR length(btrim(avatar_path)) > 0
+        ),
+
+    CONSTRAINT chk_profiles_avatar_path_length
+        CHECK (
+            avatar_path IS NULL
+            OR char_length(btrim(avatar_path)) <= 1024
+        ),
+
+    CONSTRAINT chk_profiles_updated_at
+        CHECK (
+            updated_at >= created_at
+        ),
+
+    CONSTRAINT chk_profiles_deleted_at
+        CHECK (
+            deleted_at IS NULL
+            OR deleted_at >= created_at
+        )
 );
 
 --------------------------------------------------------------------------------
 -- TABLE COMMENT
 --------------------------------------------------------------------------------
 
-COMMENT ON TABLE profiles IS
-'Stores application user information linked to Supabase authentication.';
+COMMENT ON TABLE public.profiles IS
+'Application user profiles linked one-to-one with Supabase Auth users. Profiles and roles are assigned explicitly and are never created automatically during signup.';
 
 --------------------------------------------------------------------------------
 -- COLUMN COMMENTS
 --------------------------------------------------------------------------------
 
-COMMENT ON COLUMN profiles.id IS
-'Same UUID as auth.users.id';
+COMMENT ON COLUMN public.profiles.id IS
+'Internal UUID primary key of the application profile.';
 
-COMMENT ON COLUMN profiles.role_id IS
-'Assigned role.';
+COMMENT ON COLUMN public.profiles.user_id IS
+'Unique Supabase Auth user associated with this profile. References auth.users.';
 
-COMMENT ON COLUMN profiles.employee_code IS
-'Unique employee identifier.';
+COMMENT ON COLUMN public.profiles.role_id IS
+'Application role assigned to the profile. References public.roles.';
 
-COMMENT ON COLUMN profiles.first_name IS
-'User first name.';
+COMMENT ON COLUMN public.profiles.first_name IS
+'Employee first name.';
 
-COMMENT ON COLUMN profiles.last_name IS
-'User last name.';
+COMMENT ON COLUMN public.profiles.last_name IS
+'Employee last name.';
 
-COMMENT ON COLUMN profiles.email IS
-'Professional email address.';
+COMMENT ON COLUMN public.profiles.employee_code IS
+'Unique Agrimatco Morocco employee code. Uniqueness is enforced case-insensitively.';
 
-COMMENT ON COLUMN profiles.phone IS
-'Primary phone number.';
+COMMENT ON COLUMN public.profiles.phone IS
+'Optional employee telephone number validated by the phone_number domain.';
 
-COMMENT ON COLUMN profiles.avatar_url IS
-'Supabase Storage profile picture URL.';
+COMMENT ON COLUMN public.profiles.avatar_path IS
+'Supabase Storage object path of the employee avatar. This column does not store binary image data or a permanent public URL.';
 
-COMMENT ON COLUMN profiles.is_active IS
-'Indicates whether the profile is active.';
+COMMENT ON COLUMN public.profiles.is_active IS
+'Indicates whether the employee profile is currently active and authorized to use AgriTrial Pro.';
 
-COMMENT ON COLUMN profiles.last_login_at IS
-'Last successful login timestamp.';
+COMMENT ON COLUMN public.profiles.last_login_at IS
+'Timestamp of the employee’s latest successful AgriTrial Pro login.';
 
-COMMENT ON COLUMN profiles.created_at IS
-'Record creation timestamp.';
+COMMENT ON COLUMN public.profiles.created_at IS
+'UTC timestamp when the profile record was created.';
 
-COMMENT ON COLUMN profiles.updated_at IS
-'Last update timestamp.';
+COMMENT ON COLUMN public.profiles.updated_at IS
+'UTC timestamp when the profile record was most recently updated.';
 
-COMMENT ON COLUMN profiles.created_by IS
-'Profile that created this record.';
+COMMENT ON COLUMN public.profiles.created_by IS
+'Supabase Auth user who created the profile record.';
 
-COMMENT ON COLUMN profiles.updated_by IS
-'Last profile that updated this record.';
+COMMENT ON COLUMN public.profiles.updated_by IS
+'Supabase Auth user who most recently updated the profile record.';
 
-COMMENT ON COLUMN profiles.deleted_at IS
-'Soft delete timestamp.';
-
---------------------------------------------------------------------------------
--- INDEXES
---------------------------------------------------------------------------------
-
-CREATE INDEX IF NOT EXISTS idx_profiles_role
-ON profiles(role_id);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_employee_code
-ON profiles(employee_code);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_email
-ON profiles(email);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_active
-ON profiles(is_active);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_deleted
-ON profiles(deleted_at);
-
-CREATE INDEX IF NOT EXISTS idx_profiles_name
-ON profiles(last_name, first_name);
+COMMENT ON COLUMN public.profiles.deleted_at IS
+'Soft-deletion timestamp. NULL indicates that the profile has not been deleted.';
 
 --------------------------------------------------------------------------------
--- TRIGGERS
+-- UNIQUE INDEXES
 --------------------------------------------------------------------------------
 
-CREATE TRIGGER trg_profiles_set_timestamps
-BEFORE INSERT OR UPDATE
-ON profiles
-FOR EACH ROW
-EXECUTE FUNCTION trg_set_timestamps();
-
-CREATE TRIGGER trg_profiles_created_by
-BEFORE INSERT
-ON profiles
-FOR EACH ROW
-EXECUTE FUNCTION trg_set_created_by();
-
-CREATE TRIGGER trg_profiles_updated_by
-BEFORE UPDATE
-ON profiles
-FOR EACH ROW
-EXECUTE FUNCTION trg_set_updated_by();
-
---------------------------------------------------------------------------------
--- FUNCTION : fn_create_profile()
---------------------------------------------------------------------------------
--- Automatically creates a profile after a new user signs up.
---------------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION fn_create_profile()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS
-$$
-DECLARE
-    default_role UUID;
-BEGIN
-
-    --------------------------------------------------------------------------
-    -- Default Role
-    --------------------------------------------------------------------------
-
-    SELECT id
-    INTO default_role
-    FROM roles
-    WHERE code = 'TRIAL_OFFICER'
-    LIMIT 1;
-
-    --------------------------------------------------------------------------
-    -- Create Profile
-    --------------------------------------------------------------------------
-
-    INSERT INTO profiles
+-- Employee codes must be unique regardless of casing or surrounding spaces.
+CREATE UNIQUE INDEX uq_profiles_employee_code_ci
+    ON public.profiles
     (
-        id,
-        role_id,
-        employee_code,
-        first_name,
-        last_name,
-        email,
-        phone
-    )
-    VALUES
-    (
-        NEW.id,
-
-        default_role,
-
-        'EMP-' ||
-        LPAD(
-            FLOOR(EXTRACT(EPOCH FROM clock_timestamp()))::TEXT,
-            6,
-            '0'
-        ),
-
-        COALESCE(
-            NEW.raw_user_meta_data->>'first_name',
-            ''
-        ),
-
-        COALESCE(
-            NEW.raw_user_meta_data->>'last_name',
-            ''
-        ),
-
-        NEW.email,
-
-        NEW.raw_user_meta_data->>'phone'
+        lower(btrim(employee_code))
     );
 
-    RETURN NEW;
-
-END;
-$$;
-
-COMMENT ON FUNCTION fn_create_profile IS
-'Automatically creates an application profile after a Supabase Auth signup.';
-
 --------------------------------------------------------------------------------
--- AUTH TRIGGER
+-- LOOKUP AND FILTERING INDEXES
 --------------------------------------------------------------------------------
 
-DROP TRIGGER IF EXISTS trg_auth_create_profile
-ON auth.users;
+CREATE INDEX idx_profiles_role_id
+    ON public.profiles (role_id);
 
-CREATE TRIGGER trg_auth_create_profile
-AFTER INSERT
-ON auth.users
-FOR EACH ROW
-EXECUTE FUNCTION fn_create_profile();
+CREATE INDEX idx_profiles_active_role
+    ON public.profiles (role_id, is_active)
+    WHERE deleted_at IS NULL;
 
---------------------------------------------------------------------------------
--- HELPER FUNCTION
---------------------------------------------------------------------------------
+CREATE INDEX idx_profiles_active
+    ON public.profiles (is_active)
+    WHERE deleted_at IS NULL;
 
-CREATE OR REPLACE FUNCTION fn_full_name(profile_uuid UUID)
-RETURNS TEXT
-LANGUAGE SQL
-STABLE
-AS
-$$
-SELECT
-    CONCAT(first_name,' ',last_name)
-FROM profiles
-WHERE id = profile_uuid;
-$$;
-
-COMMENT ON FUNCTION fn_full_name IS
-'Returns the full name of a profile.';
-
---------------------------------------------------------------------------------
--- HELPER FUNCTION
---------------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION fn_is_manager(profile_uuid UUID)
-RETURNS BOOLEAN
-LANGUAGE SQL
-STABLE
-AS
-$$
-SELECT EXISTS
-(
-    SELECT 1
-    FROM profiles p
-    JOIN roles r
-        ON r.id = p.role_id
-    WHERE
-        p.id = profile_uuid
-        AND r.code = 'MANAGER'
-);
-$$;
-
-COMMENT ON FUNCTION fn_is_manager IS
-'Returns TRUE if the profile belongs to a Manager.';
-
---------------------------------------------------------------------------------
--- HELPER FUNCTION
---------------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION fn_is_general_director(profile_uuid UUID)
-RETURNS BOOLEAN
-LANGUAGE SQL
-STABLE
-AS
-$$
-SELECT EXISTS
-(
-    SELECT 1
-    FROM profiles p
-    JOIN roles r
-        ON r.id = p.role_id
-    WHERE
-        p.id = profile_uuid
-        AND r.code = 'GENERAL_DIRECTOR'
-);
-$$;
-
-COMMENT ON FUNCTION fn_is_general_director IS
-'Returns TRUE if the profile belongs to the General Director.';
-
---------------------------------------------------------------------------------
--- HELPER FUNCTION
---------------------------------------------------------------------------------
-
-CREATE OR REPLACE FUNCTION fn_is_trial_officer(profile_uuid UUID)
-RETURNS BOOLEAN
-LANGUAGE SQL
-STABLE
-AS
-$$
-SELECT EXISTS
-(
-    SELECT 1
-    FROM profiles p
-    JOIN roles r
-        ON r.id = p.role_id
-    WHERE
-        p.id = profile_uuid
-        AND r.code = 'TRIAL_OFFICER'
-);
-$$;
-
-COMMENT ON FUNCTION fn_is_trial_officer IS
-'Returns TRUE if the profile belongs to a Trial Officer.';
---------------------------------------------------------------------------------
--- ROW LEVEL SECURITY
---------------------------------------------------------------------------------
-
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
---------------------------------------------------------------------------------
--- POLICY : Users can view their own profile
---------------------------------------------------------------------------------
-
-DROP POLICY IF EXISTS profiles_select_own
-ON profiles;
-
-CREATE POLICY profiles_select_own
-ON profiles
-FOR SELECT
-TO authenticated
-USING (
-    id = auth.uid()
-);
-
---------------------------------------------------------------------------------
--- POLICY : Users can update their own profile
---------------------------------------------------------------------------------
-
-DROP POLICY IF EXISTS profiles_update_own
-ON profiles;
-
-CREATE POLICY profiles_update_own
-ON profiles
-FOR UPDATE
-TO authenticated
-USING (
-    id = auth.uid()
-)
-WITH CHECK (
-    id = auth.uid()
-);
-
---------------------------------------------------------------------------------
--- POLICY : Managers and General Directors can view all profiles
---------------------------------------------------------------------------------
-
-DROP POLICY IF EXISTS profiles_select_management
-ON profiles;
-
-CREATE POLICY profiles_select_management
-ON profiles
-FOR SELECT
-TO authenticated
-USING
-(
-    EXISTS
+CREATE INDEX idx_profiles_name
+    ON public.profiles
     (
-        SELECT 1
-        FROM profiles p
-        JOIN roles r
-            ON r.id = p.role_id
-        WHERE
-            p.id = auth.uid()
-            AND r.code IN
-            (
-                'MANAGER',
-                'GENERAL_DIRECTOR'
-            )
+        lower(btrim(last_name)),
+        lower(btrim(first_name))
     )
-);
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_profiles_last_login
+    ON public.profiles (last_login_at DESC)
+    WHERE last_login_at IS NOT NULL
+      AND deleted_at IS NULL;
+
+CREATE INDEX idx_profiles_deleted_at
+    ON public.profiles (deleted_at)
+    WHERE deleted_at IS NOT NULL;
 
 --------------------------------------------------------------------------------
--- POLICY : Only General Director can delete profiles
+-- AUDIT LOOKUP INDEXES
 --------------------------------------------------------------------------------
 
-DROP POLICY IF EXISTS profiles_delete_gd
-ON profiles;
+CREATE INDEX idx_profiles_created_by
+    ON public.profiles (created_by)
+    WHERE created_by IS NOT NULL;
 
-CREATE POLICY profiles_delete_gd
-ON profiles
-FOR DELETE
-TO authenticated
-USING
-(
-    EXISTS
-    (
-        SELECT 1
-        FROM profiles p
-        JOIN roles r
-            ON r.id = p.role_id
-        WHERE
-            p.id = auth.uid()
-            AND r.code = 'GENERAL_DIRECTOR'
-    )
-);
+CREATE INDEX idx_profiles_updated_by
+    ON public.profiles (updated_by)
+    WHERE updated_by IS NOT NULL;
 
 --------------------------------------------------------------------------------
--- VALIDATION
+-- GENERIC TRIGGERS
+--------------------------------------------------------------------------------
+
+-- Maintains created_at and updated_at using the generic trigger function
+-- created in 0005_trigger_functions.sql.
+CREATE TRIGGER trg_profiles_timestamps
+    BEFORE INSERT OR UPDATE
+    ON public.profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_set_timestamps();
+
+-- Records the authenticated Supabase user when a profile is created.
+CREATE TRIGGER trg_profiles_created_by
+    BEFORE INSERT
+    ON public.profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_set_created_by();
+
+-- Records the authenticated Supabase user when a profile is updated.
+CREATE TRIGGER trg_profiles_updated_by
+    BEFORE UPDATE
+    ON public.profiles
+    FOR EACH ROW
+    EXECUTE FUNCTION public.trg_set_updated_by();
+
+--------------------------------------------------------------------------------
+-- MIGRATION VALIDATION
 --------------------------------------------------------------------------------
 
 DO
 $$
+DECLARE
+    profile_column_count integer;
 BEGIN
+    --------------------------------------------------------------------------
+    -- Verify table creation
+    --------------------------------------------------------------------------
 
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-        AND table_name = 'profiles'
-    )
-    THEN
+    IF to_regclass('public.profiles') IS NULL THEN
         RAISE EXCEPTION
-        'Table profiles was not created successfully.';
+            'Migration 0011_profiles.sql failed: public.profiles was not created.';
     END IF;
 
+    --------------------------------------------------------------------------
+    -- Verify expected columns
+    --------------------------------------------------------------------------
+
+    SELECT count(*)
+    INTO profile_column_count
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'profiles'
+      AND column_name IN
+      (
+          'id',
+          'user_id',
+          'role_id',
+          'first_name',
+          'last_name',
+          'employee_code',
+          'phone',
+          'avatar_path',
+          'is_active',
+          'last_login_at',
+          'created_at',
+          'updated_at',
+          'created_by',
+          'updated_by',
+          'deleted_at'
+      );
+
+    IF profile_column_count <> 15 THEN
+        RAISE EXCEPTION
+            'Migration 0011_profiles.sql failed: profiles has % of 15 required columns.',
+            profile_column_count;
+    END IF;
+
+    --------------------------------------------------------------------------
+    -- Verify one-to-one auth user constraint
+    --------------------------------------------------------------------------
+
     IF NOT EXISTS
     (
         SELECT 1
-        FROM pg_proc
-        WHERE proname = 'fn_create_profile'
-    )
-    THEN
+        FROM pg_constraint
+        WHERE conrelid = 'public.profiles'::regclass
+          AND conname = 'uq_profiles_user_id'
+          AND contype = 'u'
+    ) THEN
         RAISE EXCEPTION
-        'Function fn_create_profile is missing.';
+            'Migration 0011_profiles.sql failed: unique user_id constraint is missing.';
+    END IF;
+
+    --------------------------------------------------------------------------
+    -- Verify required triggers
+    --------------------------------------------------------------------------
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'public.profiles'::regclass
+          AND tgname = 'trg_profiles_timestamps'
+          AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION
+            'Migration 0011_profiles.sql failed: timestamp trigger is missing.';
     END IF;
 
     IF NOT EXISTS
     (
         SELECT 1
         FROM pg_trigger
-        WHERE tgname = 'trg_auth_create_profile'
-    )
-    THEN
+        WHERE tgrelid = 'public.profiles'::regclass
+          AND tgname = 'trg_profiles_created_by'
+          AND NOT tgisinternal
+    ) THEN
         RAISE EXCEPTION
-        'Trigger trg_auth_create_profile is missing.';
+            'Migration 0011_profiles.sql failed: created_by trigger is missing.';
     END IF;
 
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'public.profiles'::regclass
+          AND tgname = 'trg_profiles_updated_by'
+          AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION
+            'Migration 0011_profiles.sql failed: updated_by trigger is missing.';
+    END IF;
+
+    --------------------------------------------------------------------------
+    -- Verify that forbidden onboarding logic was not introduced
+    --------------------------------------------------------------------------
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'auth.users'::regclass
+          AND tgname = 'trg_auth_create_profile'
+          AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION
+            'Frozen architecture violation: automatic Auth profile creation trigger exists.';
+    END IF;
 END;
 $$;
-
---------------------------------------------------------------------------------
--- FINAL COMMENTS
---------------------------------------------------------------------------------
-
-COMMENT ON TABLE profiles IS
-'Application user profiles linked to Supabase Auth.';
-
-COMMENT ON FUNCTION fn_create_profile IS
-'Automatically creates a profile when a new user registers.';
-
-COMMENT ON FUNCTION fn_full_name IS
-'Returns the full name of a profile.';
-
-COMMENT ON FUNCTION fn_is_manager IS
-'Checks whether a profile belongs to a Manager.';
-
-COMMENT ON FUNCTION fn_is_general_director IS
-'Checks whether a profile belongs to the General Director.';
-
-COMMENT ON FUNCTION fn_is_trial_officer IS
-'Checks whether a profile belongs to a Trial Officer.';
-
---------------------------------------------------------------------------------
--- COMMIT
---------------------------------------------------------------------------------
 
 COMMIT;
