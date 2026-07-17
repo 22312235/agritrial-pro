@@ -1,7 +1,9 @@
+```sql
 -- ============================================================
 -- AgriTrial Pro
 -- Migration: 0050_storage_buckets_and_policies.sql
--- Purpose: Supabase Storage buckets, path validation, and RLS
+-- Purpose: Supabase Storage buckets, validation helpers,
+--          permissions, and Row Level Security policies
 -- ============================================================
 
 BEGIN;
@@ -14,11 +16,6 @@ SET client_min_messages = warning;
 -- ============================================================
 -- 1. STORAGE PATH UUID HELPER
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_path_uuid(
-    text,
-    integer
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_path_uuid(
     p_object_name text,
@@ -52,7 +49,7 @@ BEGIN
     END IF;
 
     BEGIN
-        RETURN v_segment::uuid;
+        RETURN btrim(v_segment)::uuid;
     EXCEPTION
         WHEN invalid_text_representation THEN
             RETURN NULL;
@@ -64,15 +61,11 @@ COMMENT ON FUNCTION public.fn_storage_path_uuid(
     text,
     integer
 ) IS
-'Returns a UUID extracted from a slash-separated Supabase Storage object path, or NULL when invalid.';
+'Extracts a UUID from a specified segment of a slash-separated Supabase Storage object path. Returns NULL when the segment is missing or invalid.';
 
 -- ============================================================
 -- 2. STORAGE FILE EXTENSION HELPER
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_file_extension(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_file_extension(
     p_object_name text
@@ -85,46 +78,36 @@ SET search_path = public, extensions
 AS $$
     SELECT CASE
         WHEN p_object_name IS NULL
-             OR position('.' IN reverse(p_object_name)) = 0
-            THEN NULL
-        ELSE lower(
-            split_part(
-                reverse(
-                    split_part(
-                        reverse(p_object_name),
-                        '/',
-                        1
-                    )
-                ),
-                '.',
-                array_length(
-                    string_to_array(
-                        reverse(
-                            split_part(
-                                reverse(p_object_name),
-                                '/',
-                                1
-                            )
-                        ),
-                        '.'
+             OR btrim(p_object_name) = ''
+             OR split_part(
+                    regexp_replace(
+                        p_object_name,
+                        '^.*/',
+                        ''
                     ),
-                    1
+                    '.',
+                    2
+                ) = ''
+        THEN NULL
+        ELSE lower(
+            substring(
+                regexp_replace(
+                    p_object_name,
+                    '^.*/',
+                    ''
                 )
+                FROM '\.([^.]+)$'
             )
         )
     END;
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_file_extension(text)
-IS 'Returns the lowercase extension of a Supabase Storage object path.';
+IS 'Returns the lowercase file extension from a Supabase Storage object path.';
 
 -- ============================================================
 -- 3. ALLOWED IMAGE EXTENSION CHECK
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_is_allowed_image(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_is_allowed_image(
     p_object_name text
@@ -152,15 +135,11 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_is_allowed_image(text)
-IS 'Returns true when the object path has an approved image extension.';
+IS 'Returns true when the supplied Storage object path has an approved image extension.';
 
 -- ============================================================
--- 4. ALLOWED REPORT EXTENSION CHECK
+-- 4. ALLOWED GENERATED REPORT EXTENSION CHECK
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_is_allowed_report(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_is_allowed_report(
     p_object_name text
@@ -186,19 +165,13 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_is_allowed_report(text)
-IS 'Returns true when the object path has an approved generated-report extension.';
+IS 'Returns true when the supplied Storage object path has an approved report extension.';
 
 -- ============================================================
 -- 5. TRIAL STORAGE ACCESS HELPERS
+-- Path format:
+-- {trial_id}/{filename}
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_access_trial(
-    text
-);
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_modify_trial(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_can_access_trial(
     p_object_name text
@@ -241,22 +214,16 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_can_access_trial(text)
-IS 'Checks whether the authenticated user may access the trial identified by the first storage path segment.';
+IS 'Checks whether the authenticated user may access the trial identified by the first Storage path segment.';
 
 COMMENT ON FUNCTION public.fn_storage_can_modify_trial(text)
-IS 'Checks whether the authenticated user may modify the trial identified by the first storage path segment.';
+IS 'Checks whether the authenticated user may modify the trial identified by the first Storage path segment.';
 
 -- ============================================================
 -- 6. EVALUATION STORAGE ACCESS HELPERS
+-- Path format:
+-- {evaluation_id}/{filename}
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_access_evaluation(
-    text
-);
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_modify_evaluation(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_can_access_evaluation(
     p_object_name text
@@ -299,22 +266,16 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_can_access_evaluation(text)
-IS 'Checks whether the authenticated user may access the evaluation identified by the first storage path segment.';
+IS 'Checks whether the authenticated user may access the evaluation identified by the first Storage path segment.';
 
 COMMENT ON FUNCTION public.fn_storage_can_modify_evaluation(text)
-IS 'Checks whether the authenticated user may modify the evaluation identified by the first storage path segment.';
+IS 'Checks whether the authenticated user may modify the evaluation identified by the first Storage path segment.';
 
 -- ============================================================
--- 7. PROFILE AVATAR PATH ACCESS HELPERS
+-- 7. PROFILE AVATAR STORAGE ACCESS HELPERS
+-- Path format:
+-- {user_id}/{filename}
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_access_avatar(
-    text
-);
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_modify_avatar(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_can_access_avatar(
     p_object_name text
@@ -354,22 +315,16 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_can_access_avatar(text)
-IS 'Allows active authenticated users to view valid profile avatar paths.';
+IS 'Allows active authenticated users to view valid profile avatar object paths.';
 
 COMMENT ON FUNCTION public.fn_storage_can_modify_avatar(text)
-IS 'Allows users to manage their own avatar folder and General Directors to manage all avatar folders.';
+IS 'Allows users to manage files in their own avatar folder and General Directors to manage all avatar folders.';
 
 -- ============================================================
--- 8. GENERATED REPORT PATH ACCESS HELPERS
+-- 8. GENERATED REPORT STORAGE ACCESS HELPERS
+-- Path format:
+-- {user_id}/{filename}
 -- ============================================================
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_access_report(
-    text
-);
-
-DROP FUNCTION IF EXISTS public.fn_storage_can_modify_report(
-    text
-);
 
 CREATE OR REPLACE FUNCTION public.fn_storage_can_access_report(
     p_object_name text
@@ -412,10 +367,10 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.fn_storage_can_access_report(text)
-IS 'Allows users to access reports stored in their own folder and allows management to access all reports.';
+IS 'Allows users to access generated reports in their own folder and management to access all generated reports.';
 
 COMMENT ON FUNCTION public.fn_storage_can_modify_report(text)
-IS 'Allows users to modify reports stored in their own folder and allows management to modify all reports.';
+IS 'Allows users to manage generated reports in their own folder and management to manage all generated reports.';
 
 -- ============================================================
 -- 9. FUNCTION SECURITY
@@ -524,7 +479,7 @@ ON FUNCTION public.fn_storage_can_modify_report(text)
 TO authenticated, service_role;
 
 -- ============================================================
--- 10. CREATE STORAGE BUCKETS
+-- 10. CREATE OR UPDATE STORAGE BUCKETS
 -- ============================================================
 
 INSERT INTO storage.buckets (
@@ -578,6 +533,8 @@ VALUES
         ARRAY[
             'application/pdf',
             'text/csv',
+            'application/csv',
+            'application/vnd.ms-excel',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         ]::text[]
     )
@@ -586,15 +543,68 @@ DO UPDATE SET
     name = EXCLUDED.name,
     public = EXCLUDED.public,
     file_size_limit = EXCLUDED.file_size_limit,
-    allowed_mime_types = EXCLUDED.allowed_mime_types,
-    updated_at = now();
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 -- ============================================================
--- 11. STORAGE BUCKET SELECT POLICY
+-- 11. DROP EXISTING STORAGE POLICIES
+-- Policies are dropped before recreation.
+-- Functions are not dropped because policies depend on them.
 -- ============================================================
 
 DROP POLICY IF EXISTS agritrial_buckets_select_authenticated
 ON storage.buckets;
+
+DROP POLICY IF EXISTS trial_photos_storage_select
+ON storage.objects;
+
+DROP POLICY IF EXISTS trial_photos_storage_insert
+ON storage.objects;
+
+DROP POLICY IF EXISTS trial_photos_storage_update
+ON storage.objects;
+
+DROP POLICY IF EXISTS trial_photos_storage_delete
+ON storage.objects;
+
+DROP POLICY IF EXISTS evaluation_photos_storage_select
+ON storage.objects;
+
+DROP POLICY IF EXISTS evaluation_photos_storage_insert
+ON storage.objects;
+
+DROP POLICY IF EXISTS evaluation_photos_storage_update
+ON storage.objects;
+
+DROP POLICY IF EXISTS evaluation_photos_storage_delete
+ON storage.objects;
+
+DROP POLICY IF EXISTS profile_avatars_storage_select
+ON storage.objects;
+
+DROP POLICY IF EXISTS profile_avatars_storage_insert
+ON storage.objects;
+
+DROP POLICY IF EXISTS profile_avatars_storage_update
+ON storage.objects;
+
+DROP POLICY IF EXISTS profile_avatars_storage_delete
+ON storage.objects;
+
+DROP POLICY IF EXISTS generated_reports_storage_select
+ON storage.objects;
+
+DROP POLICY IF EXISTS generated_reports_storage_insert
+ON storage.objects;
+
+DROP POLICY IF EXISTS generated_reports_storage_update
+ON storage.objects;
+
+DROP POLICY IF EXISTS generated_reports_storage_delete
+ON storage.objects;
+
+-- ============================================================
+-- 12. STORAGE BUCKET SELECT POLICY
+-- ============================================================
 
 CREATE POLICY agritrial_buckets_select_authenticated
 ON storage.buckets
@@ -613,22 +623,13 @@ USING (
 );
 
 -- ============================================================
--- 12. TRIAL PHOTOS STORAGE POLICIES
--- Path format:
--- trial-photos/{trial_id}/{filename}
+-- 13. TRIAL PHOTOS STORAGE POLICIES
+-- Bucket:
+-- trial-photos
+--
+-- Required path:
+-- {trial_id}/{filename}
 -- ============================================================
-
-DROP POLICY IF EXISTS trial_photos_storage_select
-ON storage.objects;
-
-DROP POLICY IF EXISTS trial_photos_storage_insert
-ON storage.objects;
-
-DROP POLICY IF EXISTS trial_photos_storage_update
-ON storage.objects;
-
-DROP POLICY IF EXISTS trial_photos_storage_delete
-ON storage.objects;
 
 CREATE POLICY trial_photos_storage_select
 ON storage.objects
@@ -645,6 +646,10 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'trial-photos'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_trial(name)
 );
@@ -659,6 +664,10 @@ USING (
 )
 WITH CHECK (
     bucket_id = 'trial-photos'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_trial(name)
 );
@@ -673,22 +682,13 @@ USING (
 );
 
 -- ============================================================
--- 13. EVALUATION PHOTOS STORAGE POLICIES
--- Path format:
--- evaluation-photos/{evaluation_id}/{filename}
+-- 14. EVALUATION PHOTOS STORAGE POLICIES
+-- Bucket:
+-- evaluation-photos
+--
+-- Required path:
+-- {evaluation_id}/{filename}
 -- ============================================================
-
-DROP POLICY IF EXISTS evaluation_photos_storage_select
-ON storage.objects;
-
-DROP POLICY IF EXISTS evaluation_photos_storage_insert
-ON storage.objects;
-
-DROP POLICY IF EXISTS evaluation_photos_storage_update
-ON storage.objects;
-
-DROP POLICY IF EXISTS evaluation_photos_storage_delete
-ON storage.objects;
 
 CREATE POLICY evaluation_photos_storage_select
 ON storage.objects
@@ -705,6 +705,10 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'evaluation-photos'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_evaluation(name)
 );
@@ -719,6 +723,10 @@ USING (
 )
 WITH CHECK (
     bucket_id = 'evaluation-photos'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_evaluation(name)
 );
@@ -733,22 +741,13 @@ USING (
 );
 
 -- ============================================================
--- 14. PROFILE AVATAR STORAGE POLICIES
--- Path format:
--- profile-avatars/{user_id}/{filename}
+-- 15. PROFILE AVATAR STORAGE POLICIES
+-- Bucket:
+-- profile-avatars
+--
+-- Required path:
+-- {user_id}/{filename}
 -- ============================================================
-
-DROP POLICY IF EXISTS profile_avatars_storage_select
-ON storage.objects;
-
-DROP POLICY IF EXISTS profile_avatars_storage_insert
-ON storage.objects;
-
-DROP POLICY IF EXISTS profile_avatars_storage_update
-ON storage.objects;
-
-DROP POLICY IF EXISTS profile_avatars_storage_delete
-ON storage.objects;
 
 CREATE POLICY profile_avatars_storage_select
 ON storage.objects
@@ -765,6 +764,10 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'profile-avatars'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_avatar(name)
 );
@@ -779,6 +782,10 @@ USING (
 )
 WITH CHECK (
     bucket_id = 'profile-avatars'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_image(name)
     AND public.fn_storage_can_modify_avatar(name)
 );
@@ -793,22 +800,13 @@ USING (
 );
 
 -- ============================================================
--- 15. GENERATED REPORT STORAGE POLICIES
--- Path format:
--- generated-reports/{user_id}/{filename}
+-- 16. GENERATED REPORT STORAGE POLICIES
+-- Bucket:
+-- generated-reports
+--
+-- Required path:
+-- {user_id}/{filename}
 -- ============================================================
-
-DROP POLICY IF EXISTS generated_reports_storage_select
-ON storage.objects;
-
-DROP POLICY IF EXISTS generated_reports_storage_insert
-ON storage.objects;
-
-DROP POLICY IF EXISTS generated_reports_storage_update
-ON storage.objects;
-
-DROP POLICY IF EXISTS generated_reports_storage_delete
-ON storage.objects;
 
 CREATE POLICY generated_reports_storage_select
 ON storage.objects
@@ -825,6 +823,10 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'generated-reports'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_report(name)
     AND public.fn_storage_can_modify_report(name)
 );
@@ -839,6 +841,10 @@ USING (
 )
 WITH CHECK (
     bucket_id = 'generated-reports'
+    AND public.fn_storage_path_uuid(
+        name,
+        1
+    ) IS NOT NULL
     AND public.fn_storage_is_allowed_report(name)
     AND public.fn_storage_can_modify_report(name)
 );
@@ -853,13 +859,14 @@ USING (
 );
 
 -- ============================================================
--- 16. STORAGE VALIDATION
+-- 17. STORAGE VALIDATION
 -- ============================================================
 
 DO $$
 DECLARE
     v_missing_buckets text[];
-    v_missing_policies text[];
+    v_missing_object_policies text[];
+    v_missing_bucket_policies text[];
 BEGIN
     SELECT array_agg(required_bucket)
     INTO v_missing_buckets
@@ -886,7 +893,7 @@ BEGIN
     END IF;
 
     SELECT array_agg(required_policy)
-    INTO v_missing_policies
+    INTO v_missing_object_policies
     FROM (
         VALUES
             ('trial_photos_storage_select'),
@@ -914,11 +921,34 @@ BEGIN
           AND p.policyname = required.required_policy
     );
 
-    IF v_missing_policies IS NOT NULL THEN
+    IF v_missing_object_policies IS NOT NULL THEN
         RAISE EXCEPTION
-            'Storage policy validation failed. Missing policies: %',
+            'Storage object policy validation failed. Missing policies: %',
             array_to_string(
-                v_missing_policies,
+                v_missing_object_policies,
+                ', '
+            );
+    END IF;
+
+    SELECT array_agg(required_policy)
+    INTO v_missing_bucket_policies
+    FROM (
+        VALUES
+            ('agritrial_buckets_select_authenticated')
+    ) AS required(required_policy)
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_policies p
+        WHERE p.schemaname = 'storage'
+          AND p.tablename = 'buckets'
+          AND p.policyname = required.required_policy
+    );
+
+    IF v_missing_bucket_policies IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Storage bucket policy validation failed. Missing policies: %',
+            array_to_string(
+                v_missing_bucket_policies,
                 ', '
             );
     END IF;
@@ -932,11 +962,33 @@ BEGIN
             'Storage UUID path helper validation failed.';
     END IF;
 
+    IF public.fn_storage_path_uuid(
+        'invalid-uuid/file.jpg',
+        1
+    ) IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Invalid Storage UUID path validation failed.';
+    END IF;
+
+    IF public.fn_storage_file_extension(
+        '00000000-0000-0000-0000-000000000000/photo.JPG'
+    ) IS DISTINCT FROM 'jpg' THEN
+        RAISE EXCEPTION
+            'Storage file extension helper validation failed.';
+    END IF;
+
     IF NOT public.fn_storage_is_allowed_image(
         '00000000-0000-0000-0000-000000000000/photo.jpg'
     ) THEN
         RAISE EXCEPTION
             'Storage image extension validation failed.';
+    END IF;
+
+    IF public.fn_storage_is_allowed_image(
+        '00000000-0000-0000-0000-000000000000/malicious.exe'
+    ) THEN
+        RAISE EXCEPTION
+            'Storage disallowed image extension validation failed.';
     END IF;
 
     IF NOT public.fn_storage_is_allowed_report(
@@ -946,9 +998,17 @@ BEGIN
             'Storage report extension validation failed.';
     END IF;
 
+    IF public.fn_storage_is_allowed_report(
+        '00000000-0000-0000-0000-000000000000/report.exe'
+    ) THEN
+        RAISE EXCEPTION
+            'Storage disallowed report extension validation failed.';
+    END IF;
+
     RAISE NOTICE
         '0050_storage_buckets_and_policies.sql completed successfully.';
 END;
 $$;
 
 COMMIT;
+```
